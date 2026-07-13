@@ -1,0 +1,189 @@
+import cv2
+import numpy as np
+
+# =====================================================
+# Physical Coordinates (mm)
+# =====================================================
+
+world_points = {
+    "CENTER": np.array([0.0, 0.0], dtype=np.float32),
+    "RIGHT":  np.array([15.0, 0.0], dtype=np.float32),
+    "TOP":    np.array([0.0,15.0], dtype=np.float32),
+    "LEFT":   np.array([-15.0,0.0], dtype=np.float32),
+    "BOTTOM": np.array([0.0,-15.0], dtype=np.float32)
+}
+
+# =====================================================
+# HSV thresholds
+# =====================================================
+
+lower_red1 = np.array([0,100,100])
+upper_red1 = np.array([10,255,255])
+
+lower_red2 = np.array([160,100,100])
+upper_red2 = np.array([179,255,255])
+
+kernel = np.ones((5,5),np.uint8)
+
+# =====================================================
+
+cap = cv2.VideoCapture(0,cv2.CAP_DSHOW)
+
+cap.set(cv2.CAP_PROP_FRAME_WIDTH,1280)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT,720)
+cap.set(cv2.CAP_PROP_FPS,60)
+
+if not cap.isOpened():
+    raise RuntimeError("Cannot open webcam.")
+
+print()
+print("===================================")
+print("Automatic Camera Calibration")
+print("===================================")
+print("Make sure ALL FIVE red dots are visible.")
+print("Press SPACE to save.")
+print("Press Q to quit.")
+print()
+
+while True:
+
+    ret,frame = cap.read()
+
+    if not ret:
+        break
+
+    hsv = cv2.cvtColor(frame,cv2.COLOR_BGR2HSV)
+
+    mask1 = cv2.inRange(hsv,lower_red1,upper_red1)
+    mask2 = cv2.inRange(hsv,lower_red2,upper_red2)
+
+    mask = cv2.bitwise_or(mask1,mask2)
+
+    mask = cv2.morphologyEx(mask,cv2.MORPH_OPEN,kernel)
+    mask = cv2.morphologyEx(mask,cv2.MORPH_CLOSE,kernel)
+
+    contours,_ = cv2.findContours(
+        mask,
+        cv2.RETR_EXTERNAL,
+        cv2.CHAIN_APPROX_SIMPLE
+    )
+
+    points=[]
+
+    for c in contours:
+
+        if cv2.contourArea(c)<50:
+            continue
+
+        M=cv2.moments(c)
+
+        if M["m00"]==0:
+            continue
+
+        cx=int(M["m10"]/M["m00"])
+        cy=int(M["m01"]/M["m00"])
+
+        points.append((cx,cy))
+
+    display=frame.copy()
+
+    if len(points)==5:
+
+        pts=np.array(points,dtype=float)
+
+        center=np.mean(pts,axis=0)
+
+        center_idx=np.argmin(np.linalg.norm(pts-center,axis=1))
+
+        center_pt=tuple(pts[center_idx].astype(int))
+
+        remaining=[tuple(p.astype(int))
+                   for i,p in enumerate(pts)
+                   if i!=center_idx]
+
+        right=max(remaining,key=lambda p:p[0])
+        left=min(remaining,key=lambda p:p[0])
+        top=min(remaining,key=lambda p:p[1])
+        bottom=max(remaining,key=lambda p:p[1])
+
+        ordered={
+            "CENTER":center_pt,
+            "RIGHT":right,
+            "TOP":top,
+            "LEFT":left,
+            "BOTTOM":bottom
+        }
+
+        for name,p in ordered.items():
+
+            cv2.circle(display,p,8,(0,255,0),-1)
+
+            cv2.putText(
+                display,
+                name,
+                (p[0]+10,p[1]-10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0,255,0),
+                2
+            )
+
+        cv2.putText(
+            display,
+            "5 points detected - Press SPACE",
+            (20,40),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.9,
+            (0,255,0),
+            2
+        )
+
+    else:
+
+        cv2.putText(
+            display,
+            f"Detected {len(points)} / 5 points",
+            (20,40),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.9,
+            (0,0,255),
+            2
+        )
+
+    cv2.imshow("Calibration",cv2.resize(display,None,fx=0.6,fy=0.6))
+    cv2.imshow("Mask",cv2.resize(mask,None,fx=0.6,fy=0.6))
+
+    key=cv2.waitKey(1)&0xFF
+
+    if key==ord('q'):
+        break
+
+    if key==32 and len(points)==5:
+
+        pixel_points=np.array([
+            ordered["CENTER"],
+            ordered["RIGHT"],
+            ordered["TOP"],
+            ordered["LEFT"],
+            ordered["BOTTOM"]
+        ],dtype=np.float32)
+
+        world=np.array([
+            world_points["CENTER"],
+            world_points["RIGHT"],
+            world_points["TOP"],
+            world_points["LEFT"],
+            world_points["BOTTOM"]
+        ],dtype=np.float32)
+
+        H,_=cv2.findHomography(pixel_points,world)
+
+        np.save("homography.npy",H)
+
+        print("\nHomography saved.\n")
+        print(H)
+
+        break
+
+cap.release()
+cv2.destroyAllWindows()
